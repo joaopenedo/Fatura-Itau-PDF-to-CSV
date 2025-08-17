@@ -64,7 +64,7 @@ RX_TOTAL_LANC_INTER = re.compile(
     re.I
 )
 RX_DATA_VENCIMENTO = re.compile(
-    r"(Vencimento|(Com vencimento em)):\s(\d{2}\/\d{2}\/\d{4})",
+    r"(Vencimento|(Com vencimento em)|):?\s(\d{2}\/\d{2}\/\d{4})",
     re.I
 )
 
@@ -203,7 +203,7 @@ def processar_pdf(caminho_pdf: str) -> pd.DataFrame:
             for ln in linhas:
                 has_data_vencimento = RX_DATA_VENCIMENTO.search(ln)
                 if not DATA_VENCIMENTO and has_data_vencimento:
-                    DATA_VENCIMENTO = datetime.strptime(has_data_vencimento.group(1), '%d/%m/%Y').date()
+                    DATA_VENCIMENTO = datetime.strptime(has_data_vencimento.group(3), '%d/%m/%Y').date()
 
                 cartao = detectar_cartao(ln, cartao)
     
