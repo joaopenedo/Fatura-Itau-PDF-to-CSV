@@ -12,6 +12,8 @@ import streamlit as st
 from io import BytesIO
 from pathlib import Path
 import streamlit.components.v1 as components
+import pandas as pd
+from datetime import datetime
 
 from parser import processar_pdf  # <- sua função já pronta
 
@@ -29,60 +31,124 @@ st.markdown(
             {APP_VERSION}
         </span>
     </div>
-    <div style="margin-top:6px; color:#666;">Selecione sua fatura em PDF. Eu converto para planilha (CSV).</div>
+    <div style="margin-top:6px; color:#666;">Selecione uma ou mais faturas em PDF. Eu converto para planilha (CSV).</div>
     """,
     unsafe_allow_html=True,
 )
 
-pdf_file = st.file_uploader("Importar PDF da fatura", type=["pdf"])
+pdf_files = st.file_uploader("Importar PDFs das faturas", type=["pdf"], accept_multiple_files=True)
 
-if pdf_file is not None:
-    st.info("Arquivo recebido. Clique em **Processar PDF** para iniciar.")
-    if st.button("Processar PDF"):
-        with st.spinner("Processando..."):
-            # Salva o upload em memória temporária (Streamlit já fornece o buffer)
-            # Para o parser, precisamos escrever em disco ou passar um caminho temporário.
-            # Aqui usamos NamedTemporaryFile para caminho real.
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(pdf_file.read())
-                tmp_path = tmp.name
-
-            # Processa
-            df = processar_pdf(tmp_path)
-
-            # Preview
-            st.success(f"Processado! {len(df)} linhas extraídas.")
-            st.dataframe(df, use_container_width=True)
+if pdf_files:
+    st.info(f"{'Arquivo' if len(pdf_files) == 1 else 'Arquivos'} recebido{'s' if len(pdf_files) > 1 else ''}. Clique em **Processar PDFs** para iniciar.")
+    
+    # Opção para processar tudo junto ou separadamente
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        processar_junto = st.checkbox("Processar tudo em uma única planilha", value=True)
+    with col2:
+        mostrar_preview = st.checkbox("Mostrar preview dos dados", value=True)
+    
+    if st.button("Processar PDFs"):
+        import tempfile
+        import os
+        
+        all_dataframes = []
+        file_results = {}
+        
+        # Processamento com barra de progresso
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, pdf_file in enumerate(pdf_files):
+            status_text.text(f"Processando {pdf_file.name} ({i+1}/{len(pdf_files)})...")
+            progress_bar.progress((i + 1) / len(pdf_files))
             
+            with st.spinner(f"Processando {pdf_file.name}..."):
+                # Salva o upload em arquivo temporário
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(pdf_file.read())
+                    tmp_path = tmp.name
+
+                try:
+                    # Processa o PDF
+                    df = processar_pdf(tmp_path)
+                    df['Arquivo_Origem'] = pdf_file.name  # Adiciona coluna com nome do arquivo
+                    
+                    all_dataframes.append(df)
+                    file_results[pdf_file.name] = {
+                        'df': df,
+                        'success': True,
+                        'error': None
+                    }
+                    
+                except Exception as e:
+                    file_results[pdf_file.name] = {
+                        'df': None,
+                        'success': False,
+                        'error': str(e)
+                    }
+                    st.error(f"Erro ao processar {pdf_file.name}: {e}")
+                
+                # Limpa arquivo temporário
+                os.unlink(tmp_path)
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Resultados do processamento
+        sucessos = sum(1 for result in file_results.values() if result['success'])
+        erros = len(file_results) - sucessos
+        
+        if sucessos > 0:
+            st.success(f"Processamento concluído! {sucessos} arquivo{'s' if sucessos != 1 else ''} processado{'s' if sucessos != 1 else ''} com sucesso.")
+            
+            if erros > 0:
+                st.warning(f"{erros} arquivo{'s' if erros != 1 else ''} apresentou{'aram' if erros != 1 else ''} erro{'s' if erros != 1 else ''}.")
+        else:
+            st.error("Nenhum arquivo foi processado com sucesso.")
+            st.stop()
+        
+        if processar_junto and all_dataframes:
+            # Combina todos os DataFrames
+            df_combined = pd.concat(all_dataframes, ignore_index=True)
+            
+            if mostrar_preview:
+                st.subheader("📊 Preview dos dados combinados")
+                st.dataframe(df_combined, use_container_width=True)
+            
+            # Estatísticas consolidadas
             try:
-                total_valor = df["Valor (R$)"].replace(",", ".", regex=True).astype(float).sum()
-                st.markdown(
-                f"**💰 Total dos lançamentos: R$ {total_valor:,.2f}**"
-                .replace(",", "X").replace(".", ",").replace("X", ".")
-                )
+                total_valor = df_combined["Valor (R$)"].replace(",", ".", regex=True).astype(float).sum()
+                st.markdown(f"**💰 Total geral dos lançamentos: R$ {total_valor:,.2f}**"
+                           .replace(",", "X").replace(".", ",").replace("X", "."))
+                
+                # Estatísticas por arquivo
+                st.subheader("� Estatísticas por arquivo")
+                for arquivo in df_combined['Arquivo_Origem'].unique():
+                    df_arquivo = df_combined[df_combined['Arquivo_Origem'] == arquivo]
+                    total_arquivo = df_arquivo["Valor (R$)"].replace(",", ".", regex=True).astype(float).sum()
+                    st.write(f"• **{arquivo}**: {len(df_arquivo)} lançamentos, Total: R$ {total_arquivo:,.2f}"
+                            .replace(",", "X").replace(".", ",").replace("X", "."))
+                    
             except Exception as e:
-                st.warning(f"Não foi possível calcular o total: {e}")
+                st.warning(f"Não foi possível calcular os totais: {e}")
 
-            # ===== Nome do arquivo de saída: mesmo do PDF, extensão .csv =====
-            # Ex.: "Fatura_Itau_20250807-153014.pdf" -> "Fatura_Itau_20250807-153014.csv"
-            base_name = Path(pdf_file.name).stem + ".csv"
-
-            # Gera CSV em memória
+            # Download da planilha combinada
+            base_name = f"Faturas_Itau_Combinadas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            
             buffer = BytesIO()
-            buffer.write(df.to_csv(index=False).encode("utf-8-sig"))
+            buffer.write(df_combined.to_csv(index=False).encode("utf-8-sig"))
             buffer.seek(0)
             
             st.download_button(
-                label="Baixar planilha (CSV)",
+                label="📥 Baixar planilha combinada (CSV)",
                 data=buffer,
-                file_name=str(Path(base_name).with_suffix(".csv")),
+                file_name=base_name,
                 mime="text/csv",
             )
 
-            # ===== Botão: Copiar tabela para a área de transferência =====
-            # Dica: TSV (tab-separated) cola super bem no Excel mantendo vírgulas decimais.
-            tsv = df.to_csv(index=False, sep="\t")
+            # Botão copiar para área de transferência
+            tsv = df_combined.to_csv(index=False, sep="\t")
             components.html(
                 f"""
                 <div>
@@ -93,7 +159,7 @@ if pdf_file is not None:
                       border:1px solid #cbd5e1;
                       background:#f8fafc;
                       cursor:pointer;">
-                     📎 Copiar tabela
+                     📎 Copiar tabela combinada
                   </button>
                   <span id="copy-msg" style="margin-left:8px; color:#16a34a;"></span>
                   <textarea id="tsv-data" style="position:absolute; left:-10000px; top:-10000px;">{tsv}</textarea>
@@ -117,6 +183,45 @@ if pdf_file is not None:
                 """,
                 height=60,
             )
+        else:
+            # Processamento individual - mostra cada arquivo separadamente
+            st.subheader("📊 Resultados por arquivo")
+            
+            for pdf_file in pdf_files:
+                result = file_results[pdf_file.name]
+                
+                if result['success']:
+                    df = result['df']
+                    st.write(f"### 📄 {pdf_file.name}")
+                    
+                    if mostrar_preview:
+                        st.dataframe(df, use_container_width=True)
+                    
+                    try:
+                        total_valor = df["Valor (R$)"].replace(",", ".", regex=True).astype(float).sum()
+                        st.markdown(f"**💰 Total: R$ {total_valor:,.2f}** ({len(df)} lançamentos)"
+                                   .replace(",", "X").replace(".", ",").replace("X", "."))
+                    except Exception as e:
+                        st.warning(f"Não foi possível calcular o total: {e}")
 
-            st.caption("Dica: após copiar, abra o Excel e cole (Ctrl/Cmd+V).")
+                    # Download individual
+                    base_name = Path(pdf_file.name).stem + ".csv"
+                    
+                    buffer = BytesIO()
+                    # Remove a coluna Arquivo_Origem para downloads individuais
+                    df_download = df.drop(columns=['Arquivo_Origem']) if 'Arquivo_Origem' in df.columns else df
+                    buffer.write(df_download.to_csv(index=False).encode("utf-8-sig"))
+                    buffer.seek(0)
+                    
+                    st.download_button(
+                        label=f"📥 Baixar {base_name}",
+                        data=buffer,
+                        file_name=base_name,
+                        mime="text/csv",
+                        key=f"download_{pdf_file.name}"
+                    )
+                else:
+                    st.error(f"❌ {pdf_file.name}: {result['error']}")
+
+        st.caption("💡 Dica: após baixar, abra o arquivo CSV no Excel ou LibreOffice Calc.")
 
