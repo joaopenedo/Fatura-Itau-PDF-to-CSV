@@ -64,7 +64,7 @@ RX_TOTAL_LANC_INTER = re.compile(
     re.I
 )
 RX_DATA_VENCIMENTO = re.compile(
-    r"Vencimento:\s(\d{2}/\d{2}/\d{4})",
+    r"(Vencimento|(Com vencimento em)):\s(\d{2}\/\d{2}\/\d{4})",
     re.I
 )
 
