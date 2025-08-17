@@ -7,7 +7,7 @@ Parser Itaú – com stoplist de Compras Parceladas (CP) capturada na Passada 2.
 import re
 import pdfplumber
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, Dict, List, Pattern, Set
 import unicodedata
 
@@ -61,6 +61,10 @@ RX_TOTAL_TRANS_INTER = re.compile(
 )
 RX_TOTAL_LANC_INTER = re.compile(
     r"Total\s+lan[cç]amentos\s+inter\.\s+em\s+R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,\d{2})",
+    re.I
+)
+RX_DATA_VENCIMENTO = re.compile(
+    r"Vencimento:\s(\d{2}/\d{2}/\d{4})",
     re.I
 )
 
@@ -162,10 +166,23 @@ def make_key(data: str, estab: str, valor_str: str) -> str:
     v = round(valor_para_float(str(valor_str)), 2)
     return f"{data.strip()}|{_norma(estab)}|{v:.2f}"
 
+def predict_date(data_item:str, data_fatura: Optional[date]):
+    if not data_fatura:
+        raise ValueError("Data de fatura não pode ser None")
+    
+    item_data = datetime.strptime(data_item, '%d/%m').date()
+
+    if item_data.month < data_fatura.month or (item_data.month == data_fatura.month and item_data.day < data_fatura.day):
+        item_data = item_data.replace(year=data_fatura.year)
+    else:
+        item_data = item_data.replace(year=data_fatura.year - 1)
+    
+    return item_data.strftime('%d/%m/%Y')
+
 # ---------------- parser ----------------
 def processar_pdf(caminho_pdf: str) -> pd.DataFrame:
     DATA_EXPORTACAO = date.today().strftime("%d/%m/%Y")
-
+    DATA_VENCIMENTO = None
     dados: List[Dict] = []
     iof_por_cartao: Dict[str, float] = {}
     cp_keys: Set[str] = set()  # stoplist de CP
@@ -184,6 +201,10 @@ def processar_pdf(caminho_pdf: str) -> pd.DataFrame:
             em_internacionais = False
     
             for ln in linhas:
+                has_data_vencimento = RX_DATA_VENCIMENTO.search(ln)
+                if not DATA_VENCIMENTO and has_data_vencimento:
+                    DATA_VENCIMENTO = datetime.strptime(has_data_vencimento.group(1), '%d/%m/%Y').date()
+
                 cartao = detectar_cartao(ln, cartao)
     
                 if RX_INT_TITULO.search(ln):
@@ -212,6 +233,7 @@ def processar_pdf(caminho_pdf: str) -> pd.DataFrame:
                     mtx = RX_TRANSACAO.match(ln)
                     if mtx:
                         data, estabelecimento, valor = mtx.groups()
+                        data = predict_date(data, DATA_VENCIMENTO)
                         dados.append({
                             "Data": data,
                             "Estabelecimento": estabelecimento.strip(),
@@ -225,6 +247,7 @@ def processar_pdf(caminho_pdf: str) -> pd.DataFrame:
                 m = RX_TRANSACAO.match(ln)
                 if m:
                     data, estabelecimento, valor = m.groups()
+                    data = predict_date(data, DATA_VENCIMENTO)
                     dados.append({
                         "Data": data,
                         "Estabelecimento": estabelecimento.strip(),
@@ -313,6 +336,7 @@ def processar_pdf(caminho_pdf: str) -> pd.DataFrame:
                 estabelecimento = estabelecimento.strip()
                 if RX_FIQUE_RABICHO.match(estabelecimento):
                     continue
+                data = predict_date(data, DATA_VENCIMENTO)
                 dados.append({
                     "Data": data,
                     "Estabelecimento": estabelecimento,
